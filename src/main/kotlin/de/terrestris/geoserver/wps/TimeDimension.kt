@@ -110,7 +110,7 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
             }
             success(root)
         } catch (e: Exception) {
-            LOGGER.fine("Error when getting distinct values: " + e.message)
+            LOGGER.fine("Error when getting time dimensions: " + e.message)
             LOGGER.log(Level.FINE, "Stack trace:", e)
             error("Error: " + e.message)
         } finally {
