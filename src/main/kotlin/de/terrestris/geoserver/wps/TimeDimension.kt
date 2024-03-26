@@ -19,12 +19,19 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.JsonNodeFactory
 import org.geoserver.catalog.DimensionPresentation
+import org.geoserver.catalog.FeatureTypeInfo
+import org.geoserver.catalog.ResourceInfo
 import org.geoserver.catalog.impl.DimensionInfoImpl
 import org.geoserver.config.GeoServer
 import org.geoserver.security.decorators.ReadOnlyDataStore
+import org.geoserver.security.decorators.SecuredFeatureSource
+import org.geoserver.security.decorators.SecuredFeatureStore
+import org.geoserver.security.decorators.SecuredFeatureTypeInfo
 import org.geoserver.wps.gs.GeoServerProcess
 import org.geoserver.wps.process.RawData
 import org.geoserver.wps.process.StringRawData
+import org.geotools.data.DataStoreFinder
+import org.geotools.data.FeatureStore
 import org.geotools.data.shapefile.ShapefileDataStore
 import org.geotools.data.store.ContentDataStore
 import org.geotools.jdbc.JDBCDataStore
@@ -34,7 +41,6 @@ import org.geotools.process.factory.DescribeResult
 import org.geotools.util.logging.Logging
 import java.sql.Connection
 import java.sql.PreparedStatement
-import java.sql.ResultSet
 import java.sql.SQLException
 import java.text.SimpleDateFormat
 import java.util.*
@@ -61,109 +67,144 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
                     "JDBC/postgres datastore and be based on a single table with a name equal to the layer name."
         ) layerName: String
     ): RawData {
-        var conn: Connection? = null
-        var stmt: PreparedStatement? = null
-        var rs: ResultSet? = null
         return try {
             LOGGER.info("Getting time dimensions for layer: $layerName")
             val factory = JsonNodeFactory(false)
             val root = factory.objectNode()
             val tableName = layerName.split(":".toRegex())[1]
-            val featureType =
-                geoServer.catalog.getFeatureTypeByName(layerName) ?: return error("Feature type not found.")
-            val source = featureType.getFeatureSource(null, null) ?: return error("Source not found.")
-            var store = source.dataStore
+            val layer = geoServer.catalog.getLayerByName(layerName)
+            val resource = layer.getResource();
 
-            if (store is ReadOnlyDataStore) {
-                store = unwrapDataStore(store)
-            }
-            if (store !is JDBCDataStore && store !is ShapefileDataStore) {
-                return error("Store of type ${store.javaClass.simpleName} is not supported.")
+            if (resource == null) {
+                return error("Resource not found.")
             }
 
             // Get the time dimension
-            val timeData: DimensionInfoImpl = featureType.metadata.get("time") as DimensionInfoImpl
+            val timeData: DimensionInfoImpl = resource.metadata.get("time") as DimensionInfoImpl
             val attribute: String = timeData.attribute
             val presentation: DimensionPresentation = timeData.presentation
+
+            val values = if (presentation === DimensionPresentation.LIST)
+                getDistinctValuesFromResource(resource, attribute, tableName) else
+                getMinMaxValuesFromResource(resource, attribute, tableName)
+
             root.put("presentation", presentation.toString())
-
-            // Get the time values for JDBCDataStore
-            if (store is JDBCDataStore) {
-                LOGGER.info("… from JDBCDataStore");
-                val schema = store.databaseSchema
-                conn = store.dataSource.connection
-                var sql: String
-                if (presentation === DimensionPresentation.LIST) {
-                    sql = "SELECT DISTINCT \"$attribute\" FROM $schema.\"$tableName\""
-                } else {
-                    sql = "SELECT MIN(\"$attribute\"), MAX(\"$attribute\") FROM $schema.\"$tableName\""
-                }
-
-                LOGGER.fine("Final SQL: $sql")
-                stmt = conn.prepareStatement(sql)
-                rs = stmt.executeQuery()
-
-                var dataNode = root.putArray("data")
-                try {
-                    while (rs.next()) {
-                        if (presentation === DimensionPresentation.LIST) {
-                            var value = rs.getString(1)
-                            dataNode.add(value)
-                        } else {
-                            var min = rs.getString(1)
-                            var max = rs.getString(2)
-                            dataNode.add(min)
-                            dataNode.add(max)
-                        }
-                    }
-                } finally {
-                    rs.close()
-                }
-            }
-
-            // Get the time values for ShapefileDataStore
-            if (store is ShapefileDataStore) {
-                LOGGER.info("… from ShapefileDataStore");
-                val featureSource = store.featureSource
-                val featureCollection = featureSource.features
-                val iterator = featureCollection.features()
-                val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ssZ")
-
-                try {
-                    var dataNode = root.putArray("data")
-                    val distinctValues = mutableSetOf<String>()
-                    while (iterator.hasNext()) {
-                        val feature = iterator.next()
-                        val value = feature.getAttribute(attribute)
-                        if (value != null) {
-                            distinctValues.add(sdf.format(value as Date))
-                        }
-                    }
-                    if (presentation === DimensionPresentation.LIST) {
-                        distinctValues.forEach {
-                            dataNode.add(it)
-                        }
-                    } else {
-                        val min = distinctValues.minOrNull()
-                        val max = distinctValues.maxOrNull()
-                        dataNode.add(min)
-                        dataNode.add(max)
-                    }
-                } finally {
-                    iterator.close()
-                }
-            }
-
-            success(root)
+            val dataNode = root.putArray("data")
+            values.forEach { dataNode.add(it) }
+            success(root);
         } catch (e: Exception) {
-            LOGGER.fine("Error when getting time dimensions: " + e.message)
-            LOGGER.log(Level.FINE, "Stack trace:", e)
-            error("Error: " + e.message)
-        } finally {
-            conn?.close()
-            stmt?.close()
-            rs?.close()
+            LOGGER.log(Level.WARNING, "Error getting time dimension", e)
+            error("Error getting time dimension: ${e.message}")
         }
+
+    }
+
+    private fun getDistinctValuesFromResource(resource: ResourceInfo, attribute: String, tableName: String): MutableSet<String> {
+        if (resource is SecuredFeatureTypeInfo || resource is FeatureTypeInfo) {
+            val dataStore = DataStoreFinder.getDataStore(resource.store.connectionParameters);
+            return when (dataStore) {
+                is JDBCDataStore -> getDistinctValuesFromStore(dataStore, attribute, tableName)
+                is ShapefileDataStore -> getDistinctValuesFromStore(dataStore, attribute, tableName)
+                else -> throw IllegalArgumentException("Unsupported data store type")
+            }
+        }
+        throw Error("Unsupported resource type")
+    }
+
+    private fun getMinMaxValuesFromResource(resource: ResourceInfo, attribute: String, tableName: String): MutableSet<String> {
+        if (resource is SecuredFeatureTypeInfo || resource is FeatureTypeInfo) {
+            val dataStore = DataStoreFinder.getDataStore(resource.store.connectionParameters);
+            return when (dataStore) {
+                is JDBCDataStore -> getMinMaxValuesFromStore(dataStore, attribute, tableName)
+                is ShapefileDataStore -> getMinMaxValuesFromStore(dataStore, attribute, tableName)
+                else -> throw IllegalArgumentException("Unsupported data store type")
+            }
+        }
+        throw Error("Unsupported resource type")
+    }
+
+    private fun getDistinctValuesFromStore(store: ReadOnlyDataStore, attribute: String, tableName: String): MutableSet<String> {
+        val unwrappedDataStore = unwrapDataStore(store)
+        return when (unwrappedDataStore) {
+            is JDBCDataStore -> getDistinctValuesFromStore(unwrappedDataStore, attribute, tableName)
+            is ShapefileDataStore -> getDistinctValuesFromStore(unwrappedDataStore, attribute, tableName)
+            else -> throw IllegalArgumentException("Unsupported data store type")
+        }
+    }
+
+    private fun getDistinctValuesFromStore(store: JDBCDataStore, attribute: String, tableName: String): MutableSet<String> {
+        LOGGER.info("Get distinct values from JDBCDataStore");
+        var conn: Connection? = null
+        var stmt: PreparedStatement? = null
+        val schema = store.databaseSchema
+        conn = store.dataSource.connection
+        var sql = "SELECT DISTINCT \"$attribute\" FROM $schema.\"$tableName\""
+
+        LOGGER.fine("Final SQL: $sql")
+        stmt = conn.prepareStatement(sql)
+        var rs = stmt.executeQuery()
+
+        try {
+            val distinctValues = mutableSetOf<String>()
+            while (rs.next()) {
+                distinctValues.add(rs.getString(1))
+            }
+            return distinctValues
+        } finally {
+            rs.close()
+        }
+    }
+
+    private fun getDistinctValuesFromStore(store: ShapefileDataStore, attribute: String, tableName: String): MutableSet<String> {
+        LOGGER.info("… from ShapefileDataStore");
+        val featureSource = store.featureSource
+        val featureCollection = featureSource.features
+        val iterator = featureCollection.features()
+        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ssZ")
+
+        try {
+            val distinctValues = mutableSetOf<String>()
+            while (iterator.hasNext()) {
+                val feature = iterator.next()
+                val value = feature.getAttribute(attribute)
+                if (value != null) {
+                    distinctValues.add(sdf.format(value as Date))
+                }
+            }
+            return distinctValues
+        } finally {
+            iterator.close()
+        }
+    }
+
+    private fun getMinMaxValuesFromStore(store: JDBCDataStore, attribute: String, tableName: String): MutableSet<String> {
+        LOGGER.info("Get min/max values from JDBCDataStore");
+        var conn: Connection? = null
+        var stmt: PreparedStatement? = null
+        val schema = store.databaseSchema
+        conn = store.dataSource.connection
+        var sql = "SELECT MIN(\"$attribute\"), MAX(\"$attribute\") FROM $schema.\"$tableName\""
+
+        LOGGER.fine("Final SQL: $sql")
+        stmt = conn.prepareStatement(sql)
+        var rs = stmt.executeQuery()
+
+        try {
+            val minMaxValues = mutableSetOf<String>()
+            while (rs.next()) {
+                minMaxValues.add(rs.getString(1))
+                minMaxValues.add(rs.getString(2))
+            }
+            return minMaxValues
+        } finally {
+            rs.close()
+        }
+    }
+
+    private fun getMinMaxValuesFromStore(store: ShapefileDataStore, attribute: String, tableName: String): MutableSet<String> {
+        LOGGER.info("… from ShapefileDataStore");
+        var values = getDistinctValuesFromStore(store, attribute, tableName)
+        return mutableSetOf(values.min(), values.max())
     }
 
     @Throws(IllegalArgumentException::class)
@@ -183,7 +224,6 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
                 LOGGER.log(Level.FINE, "Could not unwrap data store of type ${type.simpleName}", e)
             }
         }
-
         throw IllegalArgumentException("Could not unwrap data store")
     }
 
