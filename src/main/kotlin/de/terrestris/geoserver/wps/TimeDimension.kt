@@ -18,20 +18,15 @@ import com.fasterxml.jackson.core.JsonProcessingException
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.JsonNodeFactory
-import org.geoserver.catalog.DimensionPresentation
-import org.geoserver.catalog.FeatureTypeInfo
-import org.geoserver.catalog.ResourceInfo
+import org.geoserver.catalog.*
 import org.geoserver.catalog.impl.DimensionInfoImpl
 import org.geoserver.config.GeoServer
 import org.geoserver.security.decorators.ReadOnlyDataStore
-import org.geoserver.security.decorators.SecuredFeatureSource
-import org.geoserver.security.decorators.SecuredFeatureStore
 import org.geoserver.security.decorators.SecuredFeatureTypeInfo
 import org.geoserver.wps.gs.GeoServerProcess
 import org.geoserver.wps.process.RawData
 import org.geoserver.wps.process.StringRawData
 import org.geotools.data.DataStoreFinder
-import org.geotools.data.FeatureStore
 import org.geotools.data.shapefile.ShapefileDataStore
 import org.geotools.data.store.ContentDataStore
 import org.geotools.jdbc.JDBCDataStore
@@ -39,13 +34,14 @@ import org.geotools.process.factory.DescribeParameter
 import org.geotools.process.factory.DescribeProcess
 import org.geotools.process.factory.DescribeResult
 import org.geotools.util.logging.Logging
+import java.io.File
+import java.net.URL
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.SQLException
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.logging.Level
-
 
 @DescribeProcess(title = "timeDimension", description = "Gets the time dimension of a layer.")
 class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
@@ -71,22 +67,31 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
             LOGGER.info("Getting time dimensions for layer: $layerName")
             val factory = JsonNodeFactory(false)
             val root = factory.objectNode()
-            val tableName = layerName.split(":".toRegex())[1]
+            val resourceName = layerName.split(":".toRegex())[1]
             val layer = geoServer.catalog.getLayerByName(layerName)
-            val resource = layer.getResource();
+            var resource = layer.getResource();
 
             if (resource == null) {
                 return error("Resource not found.")
             }
 
             // Get the time dimension
-            val timeData: DimensionInfoImpl = resource.metadata.get("time") as DimensionInfoImpl
-            val attribute: String = timeData.attribute
-            val presentation: DimensionPresentation = timeData.presentation
+            val timeData = resource.metadata.get("time") as DimensionInfoImpl
+            val presentation = timeData.presentation
+            var attribute = timeData.attribute
+            val values: MutableSet<String>
 
-            val values = if (presentation === DimensionPresentation.LIST)
-                getDistinctValuesFromResource(resource, attribute, tableName) else
-                getMinMaxValuesFromResource(resource, attribute, tableName)
+            if (resource is CoverageInfo) {
+                attribute = getTimeAttributeFromCoverage(resource);
+                val shapefileDataStore = getShapeFileResourceFromCoverage(resource);
+                values = if (presentation === DimensionPresentation.LIST)
+                    getDistinctValuesFromStore(shapefileDataStore, attribute, resourceName) else
+                    getMinMaxValuesFromStore(shapefileDataStore, attribute, resourceName)
+            } else {
+                values = if (presentation === DimensionPresentation.LIST)
+                    getDistinctValuesFromResource(resource, attribute, resourceName) else
+                    getMinMaxValuesFromResource(resource, attribute, resourceName)
+            }
 
             root.put("presentation", presentation.toString())
             val dataNode = root.putArray("data")
@@ -99,6 +104,54 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
 
     }
 
+    private fun getTimeAttributeFromCoverage(coverageInfo: CoverageInfo): String {
+        LOGGER.info("Getting time attribute from coverage")
+        val dataStore = coverageInfo.store
+        val baseDirectory = dataStore.catalog.resourceLoader.baseDirectory
+        val nativeName = coverageInfo.nativeCoverageName
+
+        // list files in the directory
+        val directory = File(baseDirectory, nativeName)
+        val files = directory.listFiles()
+
+        // find file the ends with properties but is not indexer.properties or timeregex.properties
+        for (file in files) {
+            if (file.name.endsWith("properties") && !file.name.equals("indexer.properties") && !file.name.equals("timeregex.properties")) {
+                val url = URL("file:${file.absolutePath}")
+                val properties = Properties()
+                properties.load(url.openStream())
+                return properties.getProperty("TimeAttribute")
+            }
+        }
+        throw Error("Could not find time attribute in coverage properties")
+    }
+
+    private fun getShapeFileResourceFromCoverage(coverageInfo: CoverageInfo): ShapefileDataStore {
+        LOGGER.info("Getting shapefile resource from coverage")
+        val dataStore = coverageInfo.store
+        val baseDirectory = dataStore.catalog.resourceLoader.baseDirectory
+        val nativeName = coverageInfo.nativeCoverageName
+
+        // list files in the directory
+        val directory = File(baseDirectory, nativeName)
+
+        if (!directory.isDirectory) {
+            throw Error("Coverage directory not found")
+        }
+
+        val files = directory.listFiles()
+
+        // throw error if folder contains more than one file that ends with .shp
+        val shapeFiles = files?.filter { it.name.endsWith(".shp") }
+        if (shapeFiles === null || shapeFiles.size > 1) {
+            throw Error("Coverage contains more than one shapefile or no shapefile.")
+        }
+        val storeParams = mapOf(
+            "url" to shapeFiles[0].toURI().toURL()
+        )
+        return DataStoreFinder.getDataStore(storeParams) as ShapefileDataStore;
+    }
+
     private fun getDistinctValuesFromResource(resource: ResourceInfo, attribute: String, tableName: String): MutableSet<String> {
         if (resource is SecuredFeatureTypeInfo || resource is FeatureTypeInfo) {
             val dataStore = DataStoreFinder.getDataStore(resource.store.connectionParameters);
@@ -108,7 +161,7 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
                 else -> throw IllegalArgumentException("Unsupported data store type")
             }
         }
-        throw Error("Unsupported resource type")
+        throw Error("Unsupported resource type: " + resource::class.simpleName)
     }
 
     private fun getMinMaxValuesFromResource(resource: ResourceInfo, attribute: String, tableName: String): MutableSet<String> {
@@ -120,7 +173,7 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
                 else -> throw IllegalArgumentException("Unsupported data store type")
             }
         }
-        throw Error("Unsupported resource type")
+        throw Error("Unsupported resource type: " + resource::class.simpleName)
     }
 
     private fun getDistinctValuesFromStore(store: ReadOnlyDataStore, attribute: String, tableName: String): MutableSet<String> {
@@ -128,7 +181,7 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
         return when (unwrappedDataStore) {
             is JDBCDataStore -> getDistinctValuesFromStore(unwrappedDataStore, attribute, tableName)
             is ShapefileDataStore -> getDistinctValuesFromStore(unwrappedDataStore, attribute, tableName)
-            else -> throw IllegalArgumentException("Unsupported data store type")
+            else -> throw IllegalArgumentException("Unsupported data store type: " + unwrappedDataStore::class.simpleName)
         }
     }
 
@@ -156,7 +209,7 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
     }
 
     private fun getDistinctValuesFromStore(store: ShapefileDataStore, attribute: String, tableName: String): MutableSet<String> {
-        LOGGER.info("… from ShapefileDataStore");
+        LOGGER.info("Get distinct values from ShapefileDataStore");
         val featureSource = store.featureSource
         val featureCollection = featureSource.features
         val iterator = featureCollection.features()
@@ -202,7 +255,7 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
     }
 
     private fun getMinMaxValuesFromStore(store: ShapefileDataStore, attribute: String, tableName: String): MutableSet<String> {
-        LOGGER.info("… from ShapefileDataStore");
+        LOGGER.info("Get min/max values from ShapefileDataStore");
         var values = getDistinctValuesFromStore(store, attribute, tableName)
         return mutableSetOf(values.min(), values.max())
     }
