@@ -103,10 +103,9 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
         LOGGER.info("Getting time attribute from coverage")
         val dataStore = coverageInfo.store
         val baseDirectory = dataStore.catalog.resourceLoader.baseDirectory
-        val nativeName = coverageInfo.nativeCoverageName
 
         // list files in the directory
-        val directory = File(baseDirectory, nativeName)
+        val directory = File(baseDirectory, dataStore.url.removePrefix("file:"))
 
         if (!directory.isDirectory) {
             throw Error("Coverage directory not found:  ${directory.absolutePath}")
@@ -130,10 +129,9 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
         LOGGER.info("Getting shapefile resource from coverage")
         val dataStore = coverageInfo.store
         val baseDirectory = dataStore.catalog.resourceLoader.baseDirectory
-        val nativeName = coverageInfo.nativeCoverageName
 
         // list files in the directory
-        val directory = File(baseDirectory, nativeName)
+        val directory = File(baseDirectory, dataStore.url.removePrefix("file:"))
 
         if (!directory.isDirectory) {
             throw Error("Coverage directory not found: ${directory.absolutePath}")
