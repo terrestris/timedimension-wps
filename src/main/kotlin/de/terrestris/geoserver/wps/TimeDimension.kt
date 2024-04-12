@@ -99,18 +99,29 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
         }
     }
 
-    private fun getTimeAttributeFromCoverage(coverageInfo: CoverageInfo): String {
-        LOGGER.info("Getting time attribute from coverage")
-        val dataStore = coverageInfo.store
-        val baseDirectory = dataStore.catalog.resourceLoader.baseDirectory
-
-        // list files in the directory
-        val directory = File(baseDirectory, dataStore.url.removePrefix("file:"))
+    private fun getDirectoryFromCoverageStoreInfo(coverageStoreInfo: CoverageStoreInfo): File {
+        val baseDirectory = coverageStoreInfo.catalog.resourceLoader.baseDirectory
+        val url = coverageStoreInfo.url;
+        val directory =
+            if (url.startsWith("file:///")) {
+                File(url.removePrefix("file://"))
+            } else {
+                File(baseDirectory, url.removePrefix("file:"))
+            }
 
         if (!directory.isDirectory) {
             throw Error("Coverage directory not found:  ${directory.absolutePath}")
         }
 
+        return directory
+    }
+
+    private fun getTimeAttributeFromCoverage(coverageInfo: CoverageInfo): String {
+        LOGGER.info("Getting time attribute from coverage")
+        val dataStore = coverageInfo.store
+        val directory = getDirectoryFromCoverageStoreInfo(dataStore);
+
+        // list files in the directory
         val files = directory.listFiles()
 
         LOGGER.info("Looking for properties file in coverage directory: ${directory.absolutePath}")
@@ -128,23 +139,23 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
     private fun getShapeFileResourceFromCoverage(coverageInfo: CoverageInfo): ShapefileDataStore {
         LOGGER.info("Getting shapefile resource from coverage")
         val dataStore = coverageInfo.store
-        val baseDirectory = dataStore.catalog.resourceLoader.baseDirectory
-
-        // list files in the directory
-        val directory = File(baseDirectory, dataStore.url.removePrefix("file:"))
-
-        if (!directory.isDirectory) {
-            throw Error("Coverage directory not found: ${directory.absolutePath}")
-        }
+        val directory = getDirectoryFromCoverageStoreInfo(dataStore);
 
         val files = directory.listFiles()
         // throw error if folder contains more than one file that ends with .shp
         val shapeFiles = files?.filter { it.name.endsWith(".shp") }
-        if (shapeFiles === null || shapeFiles.size > 1) {
+        if (shapeFiles === null) {
             throw Error("Coverage contains more than one shapefile or no shapefile.")
         }
+        val shapeFile: File;
+        if (shapeFiles.size > 1) {
+            LOGGER.warning("Coverage contains more than one shapefile, trying to guess shapefile from directory name.")
+            shapeFile = shapeFiles.find { it.nameWithoutExtension == directory.name } ?: shapeFiles[0]
+        } else {
+            shapeFile = shapeFiles[0];
+        }
         val storeParams = mapOf(
-            "url" to shapeFiles[0].toURI().toURL()
+            "url" to shapeFile.toURI().toURL()
         )
         return DataStoreFinder.getDataStore(storeParams) as ShapefileDataStore
     }
@@ -177,7 +188,7 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
         LOGGER.info("Get distinct values from JDBCDataStore")
         val schema = store.databaseSchema
         val conn = store.dataSource.connection
-        val sql = "SELECT DISTINCT \"$attribute\" FROM $schema.\"$tableName\""
+        val sql = "SELECT DISTINCT \"$attribute\" FROM \"$schema\".\"$tableName\""
 
         LOGGER.fine("Final SQL: $sql")
         val stmt = conn.prepareStatement(sql)
