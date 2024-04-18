@@ -188,7 +188,7 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
         LOGGER.info("Get distinct values from JDBCDataStore")
         val schema = store.databaseSchema
         val conn = store.dataSource.connection
-        val sql = "SELECT DISTINCT \"$attribute\" FROM \"$schema\".\"$tableName\"  WHERE \"$attribute\" NOTNULL "
+        val sql = "SELECT DISTINCT \"$attribute\" FROM \"$schema\".\"$tableName\"  WHERE \"$attribute\" NOTNULL"
 
         LOGGER.fine("Final SQL: $sql")
         val stmt = conn.prepareStatement(sql)
