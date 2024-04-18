@@ -188,7 +188,7 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
         LOGGER.info("Get distinct values from JDBCDataStore")
         val schema = store.databaseSchema
         val conn = store.dataSource.connection
-        val sql = "SELECT DISTINCT \"$attribute\" FROM \"$schema\".\"$tableName\""
+        val sql = "SELECT DISTINCT \"$attribute\" FROM \"$schema\".\"$tableName\"  WHERE \"$attribute\" NOTNULL "
 
         LOGGER.fine("Final SQL: $sql")
         val stmt = conn.prepareStatement(sql)
@@ -197,6 +197,9 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
         resultSet.use { rs ->
             val distinctValues = mutableSetOf<String>()
             while (rs.next()) {
+                if (rs == null) {
+                    continue
+                }
                 distinctValues.add(rs.getString(1))
             }
             return distinctValues
@@ -213,6 +216,9 @@ class TimeDimension(private val geoServer: GeoServer) : GeoServerProcess {
         iterator.use { i ->
             val distinctValues = mutableSetOf<String>()
             while (i.hasNext()) {
+                if (i == null) {
+                    continue
+                }
                 val feature = i.next()
                 val value = feature.getAttribute(attribute)
                 if (value != null) {
