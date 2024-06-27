@@ -20,6 +20,13 @@
             <id>nexus.terrestris.de</id>
             <url>https://nexus.terrestris.de/repository/public/</url>
         </repository>
+        <repository>
+            <id>osgeo</id>
+            <name>OSGeo Release Repository</name>
+            <url>https://repo.osgeo.org/repository/release/</url>
+            <snapshots><enabled>false</enabled></snapshots>
+            <releases><enabled>true</enabled></releases>
+        </repository>
     </repositories>
 
     <pluginRepositories>

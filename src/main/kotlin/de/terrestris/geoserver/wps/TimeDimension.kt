@@ -25,7 +25,7 @@ import org.geoserver.security.decorators.SecuredFeatureTypeInfo
 import org.geoserver.wps.gs.GeoServerProcess
 import org.geoserver.wps.process.RawData
 import org.geoserver.wps.process.StringRawData
-import org.geotools.data.DataStoreFinder
+import org.geotools.api.data.DataStoreFinder
 import org.geotools.data.shapefile.ShapefileDataStore
 import org.geotools.jdbc.JDBCDataStore
 import org.geotools.process.factory.DescribeParameter
