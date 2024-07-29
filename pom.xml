@@ -51,7 +51,7 @@
 
     <properties>
         <geotools.version>31.3</geotools.version>
-        <geoserver.version>2.25.2</geoserver.version>
+        <geoserver.version>2.25.3</geoserver.version>
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
         <maven-jar-plugin.version>3.2.0</maven-jar-plugin.version>
         <maven-assembly-plugin.version>3.7.1</maven-assembly-plugin.version>
