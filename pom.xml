@@ -57,7 +57,7 @@
         <maven-assembly-plugin.version>3.7.1</maven-assembly-plugin.version>
 
         <jackson.version>2.19.1</jackson.version>
-        <kotlin.version>2.1.20</kotlin.version>
+        <kotlin.version>2.2.0</kotlin.version>
 
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
